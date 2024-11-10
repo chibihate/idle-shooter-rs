@@ -1,134 +1,136 @@
-use bevy::{ecs::observer::TriggerTargets, prelude::*};
+use std::f32::consts::PI;
+use std::time::Duration;
 
-use crate::{
-    gun::Bullet,
-    player::{NearestEnemy, Player},
-    resources::GlobalTextureAtlas,
-    state::GameState,
-    BULLET_SPEED, SPRITE_SCALE_FACTOR,
-};
-
-use kdtree::distance::squared_euclidean;
-use kdtree::KdTree;
+use crate::components::Health;
+use crate::configs::*;
+use crate::player::Player;
+use crate::{resources::GlobalTextureAtlas, state::GameState};
+use bevy::math::vec3;
+use bevy::prelude::*;
+use bevy::time::common_conditions::on_timer;
+use rand::Rng;
 
 pub struct EnemyPlugin;
 
 #[derive(Component)]
 pub struct Enemy;
-
-#[derive(Resource)]
-pub struct EnemyKdTree {
-    pub tree: KdTree<f32, Entity, [f32; 2]>,
+#[derive(Component)]
+pub enum EnemyType {
+    Green,
+    Red,
+    Skin,
 }
 
-impl Default for EnemyKdTree {
-    fn default() -> Self {
-        Self {
-            tree: KdTree::new(2),
+impl EnemyType {
+    fn get_rand_enemy() -> Self {
+        let mut rng = rand::thread_rng();
+        let rand_index = rng.gen_range(0..3);
+        return match rand_index {
+            0 => Self::Green,
+            1 => Self::Red,
+            _ => Self::Skin,
+        };
+    }
+
+    pub fn get_base_sprite_index(&self) -> usize {
+        match self {
+            EnemyType::Green => 8,
+            EnemyType::Red => 12,
+            EnemyType::Skin => 20,
         }
     }
 }
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EnemyKdTree>()
-            .add_systems(OnEnter(GameState::GameInit), spawn_enemies)
-            .add_systems(
-                Update,
-                (update_kdtree, find_nearest_enemy, handle_bullet_collision),
-            );
+        app.add_systems(
+            Update,
+            (
+                spawn_enemies.run_if(on_timer(Duration::from_secs_f32(ENEMY_SPAWN_INTERVAL))),
+                update_enemy_transform,
+                despawn_enemies,
+            )
+                .run_if(in_state(GameState::InGame)),
+        );
     }
 }
 
-fn spawn_enemies(mut commands: Commands, handle: Res<GlobalTextureAtlas>) {
-    commands.spawn((
-        SpriteBundle {
-            texture: handle.image.clone().unwrap(),
-            transform: Transform::from_scale(Vec3::splat(SPRITE_SCALE_FACTOR)),
-            ..default()
-        },
-        TextureAtlas {
-            layout: handle.layout.clone().unwrap(),
-            index: 8,
-        },
-        Enemy,
-    ));
+fn spawn_enemies(
+    mut commands: Commands,
+    handle: Res<GlobalTextureAtlas>,
+    player_query: Query<&Transform, With<Player>>,
+    enemy_query: Query<&Transform, (With<Enemy>, Without<Player>)>,
+) {
+    let num_enemies = enemy_query.iter().len();
+    let enemy_spawn_count = (MAX_NUM_ENEMIES - num_enemies).min(SPAWN_RATE_PER_SECOND);
+
+    if num_enemies >= MAX_NUM_ENEMIES || player_query.is_empty() {
+        return;
+    }
+
+    let player_position = player_query.single().translation.truncate();
+    for _ in 0..enemy_spawn_count {
+        let position = get_random_position_around(player_position);
+        let enemy_type = EnemyType::get_rand_enemy();
+        commands.spawn((
+            SpriteBundle {
+                texture: handle.image.clone().unwrap(),
+                transform: Transform {
+                    translation: vec3(position.x, position.y, 1.0),
+                    scale: Vec3::splat(SPRITE_SCALE_FACTOR),
+                    ..default()
+                },
+                ..default()
+            },
+            TextureAtlas {
+                layout: handle.layout.clone().unwrap(),
+                index: enemy_type.get_base_sprite_index(),
+            },
+            Enemy,
+            Health { value: 100.0 },
+        ));
+    }
 }
 
-fn update_kdtree(
-    mut tree: ResMut<EnemyKdTree>,
-    enemy_query: Query<(Entity, &Transform), With<Enemy>>,
+fn get_random_position_around(player_position: Vec2) -> Vec2 {
+    let mut rng = rand::thread_rng();
+    let offset_x = (BACKGROUND_SIZE.x - BACKGROUND_OFFSET.x) / 2.0;
+    let offset_y = (BACKGROUND_SIZE.y - BACKGROUND_OFFSET.y) / 2.0;
+    let mut enemy_position = Vec2::ZERO;
+    let mut distance = 0.0;
+    while distance < 200.0 {
+        let angle = rng.gen_range(0.0..PI * 2.0);
+        let random_x = rng.gen_range(-offset_x..offset_x);
+        let random_y = rng.gen_range(-offset_y..offset_y);
+        enemy_position = Vec2::new(angle.cos() * random_x, angle.sin() * random_y);
+        distance = player_position.distance(enemy_position);
+    }
+    enemy_position
+}
+
+fn update_enemy_transform(
+    player_query: Query<&Transform, With<Player>>,
+    mut enemy_query: Query<&mut Transform, (With<Enemy>, Without<Player>)>,
 ) {
+    if player_query.is_empty() || enemy_query.is_empty() {
+        return;
+    }
+
+    let player_pos = player_query.single().translation;
+    for mut transform in enemy_query.iter_mut() {
+        let dir = (player_pos - transform.translation).normalize();
+        transform.translation += dir * ENEMY_SPEED;
+    }
+}
+
+fn despawn_enemies(mut commands: Commands, enemy_query: Query<(Entity, &Health), With<Enemy>>) {
     if enemy_query.is_empty() {
         return;
     }
-    // Clear and rebuild tree each frame
-    tree.tree = KdTree::new(2);
 
-    for (entity, transform) in enemy_query.iter() {
-        let position = transform.translation;
-        let point = [position.x, position.y]; // Only using x and y coordinates
-        let _ = tree.tree.add(point, entity);
-    }
-}
-
-fn find_nearest_enemy(
-    tree: Res<EnemyKdTree>,
-    mut player_query: Query<(&Transform, &mut NearestEnemy), With<Player>>,
-) {
-    if player_query.is_empty() {
-        return;
-    }
-
-    for (player_transform, mut nearest) in player_query.iter_mut() {
-        let player_pos = player_transform.translation;
-        let search_point = [player_pos.x, player_pos.y];
-
-        // Find nearest enemy
-        if let Ok(nearest_results) = tree.tree.nearest(&search_point, 1, &squared_euclidean) {
-            if let Some((distance, &entity)) = nearest_results.first() {
-                nearest.entity = Some(entity);
-                nearest.distance = distance.sqrt();
-            } else {
-                // No enemies found
-                nearest.entity = None;
-                nearest.distance = f32::MAX;
-            }
-        }
-    }
-}
-
-fn handle_bullet_collision(
-    mut commands: Commands,
-    bullet_query: Query<(Entity, &Transform, &Bullet)>,
-    enemy_kdtree: Res<EnemyKdTree>,
-    mut enemy_query: Query<(Entity, &Transform), With<Enemy>>,
-) {
-    for (bullet_entity, bullet_transform, bullet) in bullet_query.iter() {
-        let bullet_pos = bullet_transform.translation;
-        let search_point = [bullet_pos.x, bullet_pos.y];
-
-        // Find nearest enemy
-        if let Ok(nearest_results) = enemy_kdtree
-            .tree
-            .nearest(&search_point, 1, &squared_euclidean)
-        {
-            if let Some((distance, &entity)) = nearest_results.first() {
-                if distance.sqrt() <= BULLET_SPEED {
-                    // Collision range
-                    // Handle collision
-                    if let Ok((_, _)) = enemy_query.get_mut(entity) {
-                        // enemy_health.current -= bullet.damage;, &mut Health
-
-                        // // Remove bullet
-                        // if commands.get_entity(bullet_entity).is_none() {
-                        //     continue;
-                        // };
-                        // info!("Hit");
-                        commands.entity(bullet_entity).despawn();
-                    }
-                }
-            }
+    for (entity, health) in enemy_query.iter() {
+        if health.value <= 0.0 {
+            commands.entity(entity).despawn();
         }
     }
 }

@@ -1,48 +1,46 @@
-use crate::player::{GunBag, Player};
+use std::u32;
+
+use crate::components::{
+    AttackSpeed, AttackSpeedPercent, Damage, Direction, GunBag, NearestEnemy, Pierces, Position,
+    Range,
+};
+use crate::configs::*;
+use crate::enemy::Enemy;
+use crate::player::Player;
 use crate::resources::GlobalTextureAtlas;
-use crate::*;
+use crate::state::GameState;
 use bevy::math::{vec2, vec3};
 use bevy::prelude::*;
 use bevy::time::Stopwatch;
-use enemy::Enemy;
-use player::NearestEnemy;
+use rand::Rng;
 
 pub struct GunPlugin;
 
 #[derive(Component)]
 pub struct Gun;
 #[derive(Component)]
-pub struct GunTimer {
-    timer: Stopwatch,
-    interval: f32,
-}
-#[derive(Component)]
-pub struct GunRange {
-    value: f32,
-}
-#[derive(Component)]
 pub struct Bullet;
-#[derive(Component)]
-struct BulletDirection {
-    value: Vec3,
-}
-#[derive(Component)]
-pub struct BulletRange {
-    value: f32,
-    origin_position: Vec2,
-}
 
 impl Plugin for GunPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (spawn_gun, update_gun_transform))
-            .add_systems(Update, (spawn_bullet, update_bullets));
+        app.add_systems(
+            Update,
+            (
+                spawn_gun,
+                update_gun_transform,
+                spawn_bullet,
+                update_bullets,
+                despawn_bullets,
+            )
+                .run_if(in_state(GameState::InGame)),
+        );
     }
 }
 
 fn spawn_gun(
     mut commands: Commands,
     handle: Res<GlobalTextureAtlas>,
-    player_query: Query<&GunBag, With<Player>>,
+    player_query: Query<(&AttackSpeedPercent, &Damage, &Range, &Pierces, &GunBag), With<Player>>,
     gun_query: Query<&Transform, With<Gun>>,
 ) {
     if player_query.is_empty() {
@@ -50,9 +48,18 @@ fn spawn_gun(
     }
 
     let num_guns = gun_query.iter().len() as u32;
-    let gun_bag = player_query.single();
+    let (attack_speed, damage, range, pierces, gun_bag) = player_query.single();
 
     if gun_bag.size <= gun_bag.capacity && num_guns < gun_bag.size {
+        let denominator = 100.0;
+        let numerator = BULLET_SPAWN_INTERVAL_DEFAULT * denominator;
+        let mut attack_speed_interval = attack_speed.value;
+        if attack_speed_interval >= 0.0 {
+            attack_speed_interval = numerator / (denominator + attack_speed_interval);
+        } else {
+            attack_speed_interval = (numerator - attack_speed_interval / numerator) / denominator;
+        }
+
         commands.spawn((
             SpriteBundle {
                 texture: handle.image.clone().unwrap(),
@@ -64,11 +71,19 @@ fn spawn_gun(
                 index: 17,
             },
             Gun,
-            GunTimer {
+            AttackSpeed {
                 timer: Stopwatch::new(),
-                interval: BULLET_SPAWN_INTERVAL_DEFAULT,
+                interval: attack_speed_interval,
             },
-            GunRange { value: 200.0 },
+            Range {
+                value: BULLET_RANGE + range.value,
+            },
+            Damage {
+                value: BULLET_DAMAGE + damage.value,
+            },
+            Pierces {
+                value: BULLET_PIERCES + pierces.value,
+            },
         ));
     }
 }
@@ -77,7 +92,7 @@ fn update_gun_transform(
     player_query: Query<(&Transform, &NearestEnemy), (With<Player>, Without<Gun>, Without<Enemy>)>,
     enemy_query: Query<&Transform, (With<Enemy>, Without<Player>, Without<Gun>)>,
     mut gun_query: Query<
-        (&mut Transform, &mut Sprite, &GunRange),
+        (&mut Transform, &mut Sprite, &Range),
         (With<Gun>, Without<Player>, Without<Enemy>),
     >,
 ) {
@@ -85,33 +100,34 @@ fn update_gun_transform(
         return;
     }
 
-    let (player_transform, nearest) = player_query.single();
-    let player_pos = player_transform.translation.truncate();
+    let (player_transform, nearest_enemy) = player_query.single();
+    let player_position = player_transform.translation.truncate();
 
-    for (index, (mut transform, mut sprite, gun_range)) in gun_query.iter_mut().enumerate() {
+    for (index, (mut transform, mut sprite, range)) in gun_query.iter_mut().enumerate() {
         let default_rotation = Quat::from_rotation_z(0.0);
-        let default_gun_pos = player_pos + GUN_OFFSET[index];
+        let default_gun_position = player_position + GUN_OFFSET[index];
 
-        if let Some(enemy_entity) = nearest.entity {
+        if let Some(enemy_entity) = nearest_enemy.entity {
             if let Ok(enemy_transform) = enemy_query.get(enemy_entity) {
-                if gun_range.value >= nearest.distance {
-                    let enemy_pos = enemy_transform.translation.truncate();
+                if range.value >= nearest_enemy.distance {
+                    let enemy_position = enemy_transform.translation.truncate();
                     let offset = 20.0;
                     let gun_offset = if GUN_OFFSET[index].x > 0.0 {
                         -offset
                     } else {
                         offset
                     };
-                    let gun_pos = player_pos + GUN_OFFSET[index] + vec2(gun_offset, 0.0);
-                    let angle = (enemy_pos.y - gun_pos.y).atan2(enemy_pos.x - gun_pos.x);
+                    let gun_position = player_position + GUN_OFFSET[index] + vec2(gun_offset, 0.0);
+                    let angle = (enemy_position.y - gun_position.y)
+                        .atan2(enemy_position.x - gun_position.x);
                     let new_gun_pos = vec2(
-                        gun_pos.x + offset * angle.cos(),
-                        gun_pos.y + offset * angle.sin(),
+                        gun_position.x + offset * angle.cos(),
+                        gun_position.y + offset * angle.sin(),
                     );
                     transform.rotation = Quat::from_rotation_z(angle);
                     transform.translation = vec3(new_gun_pos.x, new_gun_pos.y, 15.0);
                     sprite.flip_x = false;
-                    sprite.flip_y = player_pos.x > enemy_pos.x;
+                    sprite.flip_y = player_position.x > enemy_position.x;
                     continue;
                 }
             }
@@ -119,7 +135,7 @@ fn update_gun_transform(
 
         // Set default position and properties if enemy is out of range or not found
         transform.rotation = default_rotation;
-        transform.translation = vec3(default_gun_pos.x, default_gun_pos.y, 15.0);
+        transform.translation = vec3(default_gun_position.x, default_gun_position.y, 15.0);
         sprite.flip_x = index % 2 != 0;
         sprite.flip_y = false;
     }
@@ -128,85 +144,94 @@ fn update_gun_transform(
 fn spawn_bullet(
     mut commands: Commands,
     time: Res<Time>,
-    mut gun_query: Query<(&Transform, &mut GunTimer, &GunRange), With<Gun>>,
+    mut gun_query: Query<(&Transform, &mut AttackSpeed, &Range, &Damage, &Pierces), With<Gun>>,
     handle: Res<GlobalTextureAtlas>,
 ) {
     if gun_query.is_empty() {
         return;
     }
 
-    for (gun_transform, mut gun_timer, gun_range) in gun_query.iter_mut() {
-        let gun_rotation = gun_transform.rotation;
+    for (transform, mut attack_speed, range, damage, pierces) in gun_query.iter_mut() {
+        let gun_rotation = transform.rotation;
         if gun_rotation.z == 0.0 {
             break;
         }
-        let gun_pos = gun_transform.translation.truncate();
-        gun_timer.timer.tick(time.delta());
+        let gun_position = transform.translation.truncate();
+        attack_speed.timer.tick(time.delta());
 
-        if gun_timer.timer.elapsed_secs() >= gun_timer.interval {
-            gun_timer.timer.reset();
-            let bullet_direction = gun_transform.local_x();
-            let direction = vec3(bullet_direction.x, bullet_direction.y, bullet_direction.z);
-            commands.spawn((
-                SpriteBundle {
-                    texture: handle.image.clone().unwrap(),
-                    transform: Transform {
-                        translation: vec3(gun_pos.x, gun_pos.y, 1.0),
-                        rotation: gun_rotation,
-                        scale: Vec3::splat(SPRITE_SCALE_FACTOR),
+        if attack_speed.timer.elapsed_secs() >= attack_speed.interval {
+            attack_speed.timer.reset();
+            let mut rng = rand::thread_rng();
+
+            for _ in 0..BULLETS_PER_SHOT {
+                let bullet_direction = transform.local_x();
+                let direction = vec3(
+                    bullet_direction.x + rng.gen_range(-0.5..0.5) * 0.0,
+                    bullet_direction.y + rng.gen_range(-0.5..0.5) * 0.0,
+                    bullet_direction.z,
+                );
+                commands.spawn((
+                    SpriteBundle {
+                        texture: handle.image.clone().unwrap(),
+                        transform: Transform {
+                            translation: vec3(gun_position.x, gun_position.y, 1.0),
+                            rotation: gun_rotation,
+                            scale: Vec3::splat(SPRITE_SCALE_FACTOR),
+                        },
+                        ..default()
                     },
-                    ..default()
-                },
-                TextureAtlas {
-                    layout: handle.layout.clone().unwrap(),
-                    index: 16,
-                },
-                Bullet,
-                BulletDirection { value: direction },
-                BulletRange {
-                    value: gun_range.value,
-                    origin_position: Vec2 {
-                        x: gun_pos.x,
-                        y: gun_pos.y,
+                    TextureAtlas {
+                        layout: handle.layout.clone().unwrap(),
+                        index: 16,
                     },
-                },
-            ));
+                    Bullet,
+                    Direction { value: direction },
+                    Range { value: range.value },
+                    Position {
+                        value: Vec2 {
+                            x: gun_position.x,
+                            y: gun_position.y,
+                        },
+                    },
+                    Damage {
+                        value: damage.value,
+                    },
+                    Pierces {
+                        value: pierces.value,
+                    },
+                ));
+            }
         }
     }
 }
 
-fn update_bullets(mut bullet_query: Query<(&mut Transform, &BulletDirection), With<Bullet>>) {
+fn update_bullets(mut bullet_query: Query<(&mut Transform, &Direction), With<Bullet>>) {
     if bullet_query.is_empty() {
         return;
     }
 
-    for (mut t, dir) in bullet_query.iter_mut() {
-        t.translation += dir.value.normalize() * Vec3::splat(BULLET_SPEED);
-        t.translation.z = 10.0;
+    for (mut transform, direction) in bullet_query.iter_mut() {
+        transform.translation += direction.value.normalize() * Vec3::splat(BULLET_SPEED);
+        transform.translation.z = 10.0;
     }
 }
 
-fn despawn_old_bullets(
+fn despawn_bullets(
     mut commands: Commands,
-    bullet_query: Query<(&Transform, &BulletRange, Entity), With<Bullet>>,
+    mut bullet_query: Query<(Entity, &Transform, &Position, &Range, &mut Pierces), With<Bullet>>,
 ) {
-    if bullet_query.is_empty() {
-        return;
-    }
-
-    for (transform, range, e) in bullet_query.iter() {
-        let distance = transform
-            .translation
+    for (entity, transform, origin_position, range, mut pierces) in bullet_query.iter_mut() {
+        let bullet_position = transform.translation;
+        let distance = bullet_position
             .truncate()
-            .distance(range.origin_position)
+            .distance(origin_position.value)
             .ceil();
         if distance >= range.value {
-            if commands.get_entity(e).is_none() {
-                continue;
-            };
-            info!("distance");
-            commands.entity(e).despawn();
-            // commands.entity(e).despawn();
+            pierces.value = 0;
+        }
+
+        if pierces.value == 0 {
+            commands.entity(entity).despawn();
         }
     }
 }

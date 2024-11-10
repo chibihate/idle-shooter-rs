@@ -1,7 +1,7 @@
-use crate::*;
+use crate::configs::*;
+use crate::state::GameState;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use state::GameState;
 
 pub struct ResourcesPlugin;
 
@@ -12,12 +12,14 @@ pub struct GlobalTextureAtlas {
 }
 
 #[derive(Resource)]
-pub struct CursorPosition(pub Option<Vec2>);
+pub struct CursorPosition {
+    pub value: Option<Vec2>,
+}
 
 impl Plugin for ResourcesPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(GlobalTextureAtlas::default())
-            .insert_resource(CursorPosition(None))
+            .insert_resource(CursorPosition { value: None })
             .add_systems(OnEnter(GameState::Loading), load_assets)
             .add_systems(Update, close_on_esc)
             .add_systems(
@@ -53,7 +55,7 @@ fn update_cursor_position(
     camera_query: Query<(&Camera, &GlobalTransform), With<Camera>>,
 ) {
     if window_query.is_empty() || camera_query.is_empty() {
-        cursor_pos.0 = None;
+        cursor_pos.value = None;
     }
 
     let (camera, camera_transform) = camera_query.single();
@@ -63,7 +65,7 @@ fn update_cursor_position(
         return;
     };
 
-    cursor_pos.0 = window
+    cursor_pos.value = window
         .cursor_position()
         .and_then(|cursor| camera.viewport_to_world(camera_transform, cursor))
         .map(|ray| ray.origin.truncate());

@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 use camera::FollowCameraPlugin;
+use collision::CollisionPlugin;
+use configs::*;
 use enemy::EnemyPlugin;
 use gun::GunPlugin;
 use player::PlayerPlugin;
@@ -26,16 +28,17 @@ fn main() {
             EguiPlugin,
         ))
         .init_state::<GameState>()
-        .insert_resource(ClearColor(Color::srgb_u8(
-            BACKGROUND_COLOR.0,
-            BACKGROUND_COLOR.1,
-            BACKGROUND_COLOR.2,
-        )))
+        // .insert_resource(ClearColor(Color::srgb_u8(
+        //     BACKGROUND_COLOR.0,
+        //     BACKGROUND_COLOR.1,
+        //     BACKGROUND_COLOR.2,
+        // )))
         .add_plugins(FollowCameraPlugin)
         .add_plugins(ResourcesPlugin)
         .add_plugins(PlayerPlugin)
         .add_plugins(GunPlugin)
         .add_plugins(EnemyPlugin)
+        .add_plugins(CollisionPlugin)
         .insert_resource(Msaa::Off)
         .run();
 }
