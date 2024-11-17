@@ -110,16 +110,19 @@ fn get_random_position_around(player_position: Vec2) -> Vec2 {
 
 fn update_enemy_transform(
     player_query: Query<&Transform, With<Player>>,
-    mut enemy_query: Query<&mut Transform, (With<Enemy>, Without<Player>)>,
+    mut enemy_query: Query<(&mut Transform, &mut Sprite), (With<Enemy>, Without<Player>)>,
 ) {
-    if player_query.is_empty() || enemy_query.is_empty() {
+    let Ok(player_pos) = player_query.get_single() else {
         return;
-    }
+    };
 
-    let player_pos = player_query.single().translation;
-    for mut transform in enemy_query.iter_mut() {
-        let dir = (player_pos - transform.translation).normalize();
-        transform.translation += dir * ENEMY_SPEED;
+    for (mut transform, mut sprite) in enemy_query.iter_mut() {
+        let dir = (player_pos.translation - transform.translation).normalize();
+        let velocity = dir * ENEMY_SPEED;
+        transform.translation += velocity;
+
+        // Flip enemy sprite
+        sprite.flip_x = velocity.x < 0.0;
     }
 }
 
