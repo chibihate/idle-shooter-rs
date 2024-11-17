@@ -1,8 +1,7 @@
 use bevy::prelude::Vec2;
 
 // Window
-pub const WINDOW_WIDTH: f32 = 720.0;
-pub const WINDOW_HEIGHT: f32 = 480.0;
+pub const WINDOW_SIZE: Vec2 = Vec2::new(720.0, 480.0);
 
 // Sprites
 pub const SPRITE_SHEET_PATH: &str = "assets.png";
