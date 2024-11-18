@@ -20,7 +20,7 @@ fn main() {
                         title: "Shooter".into(),
                         resizable: true,
                         focused: true,
-                        resolution: (WINDOW_WIDTH, WINDOW_HEIGHT).into(),
+                        resolution: WINDOW_SIZE.into(),
                         ..default()
                     }),
                     ..default()
