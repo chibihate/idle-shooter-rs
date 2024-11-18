@@ -57,13 +57,13 @@ fn init_player(
 
 fn update_player_movement(
     cursor_position: Res<CursorPosition>,
-    mut player_query: Query<(&mut Transform, &Speed), With<Player>>,
+    mut player_query: Query<(&mut Transform, &mut Sprite, &Speed), With<Player>>,
 ) {
     if player_query.is_empty() {
         return;
     }
 
-    let (mut player_transform, player_speed) = player_query.single_mut();
+    let (mut player_transform, mut sprite, player_speed) = player_query.single_mut();
     let player_position = player_transform.translation.truncate();
     let cursor_position = match cursor_position.value {
         Some(position) => position,
@@ -79,6 +79,9 @@ fn update_player_movement(
         let extents = Vec3::from(((BACKGROUND_SIZE - BACKGROUND_OFFSET) / 2.0, 0.0));
         player_transform.translation = player_transform.translation.min(extents).max(-extents);
     }
+
+    // Flip the player sprite
+    sprite.flip_x = cursor_position.x < player_position.x;
 }
 
 fn player_ui(
